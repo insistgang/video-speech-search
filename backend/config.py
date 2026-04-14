@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -61,7 +62,7 @@ class Settings(BaseModel):
     def allowed_video_directories(self) -> tuple[Path, ...]:
         configured_dirs = [
             Path(segment.strip()).expanduser().resolve()
-            for segment in self.allowed_video_dirs_raw.split(os.pathsep)
+            for segment in re.split(r"[;:\n]", self.allowed_video_dirs_raw)
             if segment.strip()
         ]
         if configured_dirs:
