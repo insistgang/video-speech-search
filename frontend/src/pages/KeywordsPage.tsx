@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, getFrameImageUrl, KeywordScanResult, KeywordSet } from "../lib/api";
+import { parseKeywordTermsInput } from "../lib/keywords";
 import {
   formatAiDetectionLabel,
   formatApplicationLabel,
@@ -14,6 +15,7 @@ export function KeywordsPage() {
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
   const [terms, setTerms] = useState("");
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [scanResults, setScanResults] = useState<KeywordScanResult[]>([]);
   const [activeScanName, setActiveScanName] = useState("");
   const [error, setError] = useState("");
@@ -31,18 +33,40 @@ export function KeywordsPage() {
     event.preventDefault();
     setError("");
     try {
-      await api.createKeywordSet({
+      const payload = {
         name,
         category,
-        terms: terms.split(",").map((term) => term.trim()).filter(Boolean)
-      });
+        terms: parseKeywordTermsInput(terms)
+      };
+      if (editingId === null) {
+        await api.createKeywordSet(payload);
+      } else {
+        await api.updateKeywordSet(editingId, payload);
+      }
       setName("");
       setCategory("");
       setTerms("");
+      setEditingId(null);
       load();
     } catch (saveError) {
       setError(saveError instanceof Error ? formatErrorMessage(saveError.message) : "词库保存失败");
     }
+  }
+
+  function onEdit(item: KeywordSet) {
+    setEditingId(item.id);
+    setName(item.name);
+    setCategory(item.category);
+    setTerms(item.terms.join("，"));
+    setError("");
+  }
+
+  function onCancelEdit() {
+    setEditingId(null);
+    setName("");
+    setCategory("");
+    setTerms("");
+    setError("");
   }
 
   async function onScan(item: KeywordSet) {
@@ -80,7 +104,7 @@ export function KeywordsPage() {
     <section className="panel-grid">
       <div className="panel">
         <p className="eyebrow">规则词库</p>
-        <h2>创建关键词集</h2>
+        <h2>{editingId === null ? "创建关键词集" : "编辑关键词集"}</h2>
         <form onSubmit={onSubmit} className="form-stack">
           <label>
             名称
@@ -95,6 +119,11 @@ export function KeywordsPage() {
             <input value={terms} onChange={(event) => setTerms(event.target.value)} placeholder="ChatGPT，Bedrock，Copilot" />
           </label>
           <button type="submit">保存关键词集</button>
+          {editingId !== null ? (
+            <button type="button" className="button-secondary" onClick={onCancelEdit}>
+              取消编辑
+            </button>
+          ) : null}
         </form>
         {error ? <p className="error">{error}</p> : null}
       </div>
@@ -108,6 +137,9 @@ export function KeywordsPage() {
               <p>{item.category}</p>
               <p>{item.terms.join(", ")}</p>
               <div className="action-row">
+                <button type="button" className="button-secondary" onClick={() => onEdit(item)} disabled={busyId === item.id}>
+                  编辑
+                </button>
                 <button type="button" onClick={() => onScan(item)} disabled={busyId === item.id}>
                   {busyId === item.id ? "扫描中..." : "立即扫描"}
                 </button>

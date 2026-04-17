@@ -140,54 +140,10 @@ CREATE INDEX IF NOT EXISTS idx_suspicious_segments_video_id ON suspicious_segmen
 CREATE INDEX IF NOT EXISTS idx_task_queue_status ON task_queue(status);
 CREATE INDEX IF NOT EXISTS idx_task_queue_video_id ON task_queue(video_id);
 
--- FTS5 triggers for automatic sync between frame_analysis and frame_analysis_fts
--- Trigger: Insert into FTS when frame_analysis is inserted
-CREATE TRIGGER IF NOT EXISTS frame_analysis_fts_insert AFTER INSERT ON frame_analysis
-BEGIN
-    INSERT OR REPLACE INTO frame_analysis_fts(content, video_id, frame_id, timestamp)
-    VALUES (
-        json_object(
-            'screen_text', NEW.screen_text,
-            'application', NEW.application,
-            'url', NEW.url,
-            'operation', NEW.operation,
-            'ai_tool_name', NEW.ai_tool_name,
-            'code_content_summary', NEW.code_content_summary,
-            'summary', NEW.summary,
-            'risk_indicators', NEW.risk_indicators
-        ),
-        NEW.video_id,
-        NEW.frame_id,
-        NEW.timestamp
-    );
-END;
-
--- Trigger: Update FTS when frame_analysis is updated
-CREATE TRIGGER IF NOT EXISTS frame_analysis_fts_update AFTER UPDATE ON frame_analysis
-BEGIN
-    INSERT OR REPLACE INTO frame_analysis_fts(content, video_id, frame_id, timestamp)
-    VALUES (
-        json_object(
-            'screen_text', NEW.screen_text,
-            'application', NEW.application,
-            'url', NEW.url,
-            'operation', NEW.operation,
-            'ai_tool_name', NEW.ai_tool_name,
-            'code_content_summary', NEW.code_content_summary,
-            'summary', NEW.summary,
-            'risk_indicators', NEW.risk_indicators
-        ),
-        NEW.video_id,
-        NEW.frame_id,
-        NEW.timestamp
-    );
-END;
-
--- Trigger: Delete from FTS when frame_analysis is deleted
-CREATE TRIGGER IF NOT EXISTS frame_analysis_fts_delete AFTER DELETE ON frame_analysis
-BEGIN
-    DELETE FROM frame_analysis_fts WHERE frame_id = OLD.frame_id;
-END;
+-- Note: FTS sync is managed by application layer (Repository.upsert_fts)
+-- rather than triggers, because the search content must be built by
+-- build_search_content() which uses jieba tokenization. SQLite triggers
+-- cannot replicate this tokenization, leading to mismatched FTS content.
 """
 
 

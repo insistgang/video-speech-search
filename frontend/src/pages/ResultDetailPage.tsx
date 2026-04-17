@@ -96,6 +96,11 @@ export function ResultDetailPage() {
       </div>
       <div className="panel panel-wide">
         <p className="eyebrow">时间线</p>
+        {typeof detail.total_frames === "number" && detail.total_frames > (detail.frames?.length ?? 0) ? (
+          <p className="muted">
+            当前仅展示与命中结果相邻的 {(detail.frames?.length ?? 0)} / {detail.total_frames} 帧，避免长视频详情页一次性加载全部时间线。
+          </p>
+        ) : null}
         <div className="timeline">
           {(detail.frames ?? []).map((item) => (
             <Link

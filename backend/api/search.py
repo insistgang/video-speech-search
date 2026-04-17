@@ -10,6 +10,7 @@ from backend.models import SearchRequest
 
 router = APIRouter(prefix="/search", tags=["search"])
 limiter = Limiter(key_func=get_remote_address)
+DETAIL_FRAME_WINDOW = 60
 
 
 @router.post("")
@@ -45,5 +46,17 @@ def get_search_result_detail(request: Request, frame_id: int, context=Depends(ge
         raise HTTPException(status_code=404, detail="Frame not found")
     analysis = context.repository.get_frame_analysis(frame_id)
     video = context.repository.get_video(frame["video_id"])
-    frames = context.repository.get_frames_for_video(frame["video_id"])
-    return {"video": video, "frame": frame, "analysis": analysis, "frames": frames}
+    frames = context.repository.get_frames_for_video_window(
+        frame["video_id"],
+        frame_id,
+        before=DETAIL_FRAME_WINDOW,
+        after=DETAIL_FRAME_WINDOW,
+    )
+    total_frames = context.repository.count_frames_for_video(frame["video_id"])
+    return {
+        "video": video,
+        "frame": frame,
+        "analysis": analysis,
+        "frames": frames,
+        "total_frames": total_frames,
+    }

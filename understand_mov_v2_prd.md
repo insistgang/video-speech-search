@@ -419,17 +419,17 @@ POST /api/keywords/{keyword_set_id}/scan
 
 ### Phase 1: 基础重构（Day 1-2）
 
-- [ ] 项目初始化，迁移 V1 可复用代码
-- [ ] 持久化任务队列替换内存队列
-- [ ] 配置体系升级，支持新配置项
-- [ ] 数据库 schema 升级
+- [x] 项目初始化，迁移 V1 可复用代码
+- [x] 持久化任务队列替换内存队列
+- [x] 配置体系升级，支持新配置项
+- [x] 数据库 schema 升级
 
 ### Phase 2: 帧去重 + 本地 OCR（Day 3-4）
 
-- [ ] 实现 `frame_dedup.py`（pHash 去重）
-- [ ] 实现 `local_ocr.py`（RapidOCR 集成）
-- [ ] 粗扫流程完整跑通
-- [ ] 单元测试覆盖
+- [x] 实现 `frame_dedup.py`（pHash 去重）
+- [x] 本地 OCR 作为粗扫 stage 集成在 pipeline 中（RapidOCR）
+- [x] 粗扫流程完整跑通
+- [x] 单元测试覆盖
 
 ### Phase 3: 两阶段编排（Day 5-6）
 

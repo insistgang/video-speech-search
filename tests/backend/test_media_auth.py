@@ -18,7 +18,7 @@ def _configure_app_paths(tmp_path, monkeypatch) -> None:
     get_settings.cache_clear()
 
 
-def test_media_routes_accept_api_key_query_parameter(tmp_path, monkeypatch):
+def test_media_routes_require_api_key_header(tmp_path, monkeypatch):
     _configure_app_paths(tmp_path, monkeypatch)
 
     video_path = tmp_path / "demo.mp4"
@@ -49,9 +49,13 @@ def test_media_routes_accept_api_key_query_parameter(tmp_path, monkeypatch):
             ],
         )[0]
 
-        image_response = client.get(f"/api/frames/{frame['id']}/image?api_key=test-api-key")
-        video_response = client.get(f"/api/videos/{video['id']}/file?api_key=test-api-key")
+        unauthorized_image = client.get(f"/api/frames/{frame['id']}/image?api_key=test-api-key")
+        unauthorized_video = client.get(f"/api/videos/{video['id']}/file?api_key=test-api-key")
+        image_response = client.get(f"/api/frames/{frame['id']}/image", headers={"X-API-Key": "test-api-key"})
+        video_response = client.get(f"/api/videos/{video['id']}/file", headers={"X-API-Key": "test-api-key"})
 
+    assert unauthorized_image.status_code == 401
+    assert unauthorized_video.status_code == 401
     assert image_response.status_code == 200
     assert image_response.headers["content-type"].startswith("image/")
     assert video_response.status_code == 200

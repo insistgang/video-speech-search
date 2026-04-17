@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, withMediaApiKey } from "../api";
+import { api, ApiError, getFrameImageUrl, getVideoFileUrl } from "../api";
 
 describe("api.search", () => {
   afterEach(() => {
@@ -42,11 +42,9 @@ describe("api.search", () => {
     expect(response.segment_count).toBe(0);
   });
 
-  it("appends api_key for protected media urls", () => {
-    expect(withMediaApiKey("/api/frames/1/image", "secret key")).toBe("/api/frames/1/image?api_key=secret%20key");
-    expect(withMediaApiKey("/api/videos/1/file?download=1", "secret key")).toBe(
-      "/api/videos/1/file?download=1&api_key=secret%20key",
-    );
+  it("builds media proxy urls without exposing api keys in the query string", () => {
+    expect(getFrameImageUrl(1)).toBe("/media/frames/1/image");
+    expect(getVideoFileUrl(1)).toBe("/media/videos/1/file");
   });
 
   it("surfaces backend detail messages for failed requests", async () => {
@@ -69,6 +67,8 @@ describe("api.search", () => {
       expect.objectContaining<ApiError>({
         message: "400 Path 'E:\\视频\\demo.mp4' is outside allowed directories",
         statusCode: 400,
+        isRetryable: false,
+        name: "ApiError",
       }),
     );
   });

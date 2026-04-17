@@ -5,6 +5,7 @@ export class ApiError extends Error {
     public isRetryable: boolean
   ) {
     super(message);
+    this.name = "ApiError";
   }
 }
 
@@ -88,6 +89,7 @@ export type ResultDetail = {
   frame?: { id: number; video_id: number; timestamp: number; image_path: string };
   analysis?: Record<string, unknown>;
   frames?: Array<{ id: number; timestamp: number }>;
+  total_frames?: number;
 };
 
 export type SearchResponse = {
@@ -134,22 +136,15 @@ export type Stats = {
 };
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
+export const MEDIA_BASE = "/media";
 const API_KEY = import.meta.env.VITE_API_KEY || "";
 
-export function withMediaApiKey(url: string, apiKey: string = API_KEY): string {
-  if (!apiKey) {
-    return url;
-  }
-  const separator = url.includes("?") ? "&" : "?";
-  return `${url}${separator}api_key=${encodeURIComponent(apiKey)}`;
-}
-
 export function getFrameImageUrl(frameId: number): string {
-  return withMediaApiKey(`${API_BASE}/frames/${frameId}/image`);
+  return `${MEDIA_BASE}/frames/${frameId}/image`;
 }
 
 export function getVideoFileUrl(videoId: number): string {
-  return withMediaApiKey(`${API_BASE}/videos/${videoId}/file`);
+  return `${MEDIA_BASE}/videos/${videoId}/file`;
 }
 
 async function readErrorMessage(response: Response): Promise<string> {
@@ -231,6 +226,8 @@ export const api = {
   listKeywords: () => request<KeywordSet[]>("/keywords"),
   createKeywordSet: (payload: { name: string; category: string; terms: string[] }) =>
     request("/keywords", { method: "POST", body: JSON.stringify(payload) }),
+  updateKeywordSet: (keywordSetId: number, payload: { name: string; category: string; terms: string[] }) =>
+    request<KeywordSet>(`/keywords/${keywordSetId}`, { method: "PUT", body: JSON.stringify(payload) }),
   deleteKeywordSet: (keywordSetId: number) => request(`/keywords/${keywordSetId}`, { method: "DELETE" }),
   scanKeywordSet: (keywordSetId: number) =>
     request<{ keyword_set_id: number; total_terms: number; total_hits: number; results: KeywordScanResult[] }>(

@@ -38,6 +38,7 @@ class Settings(BaseModel):
     fine_interval: int = Field(default=3, ge=1, le=30)
     processing_mode: str = Field(default="two_stage")
     api_concurrency: int = Field(default=3, ge=1, le=10)
+    task_worker_count: int = Field(default=1, ge=1, le=10)
     api_max_retries: int = Field(default=6, ge=1, le=10)
     api_min_interval_seconds: float = Field(default=1.5, ge=0.0, le=60.0)
     db_path: str = Field(default="data/db/search.db")
@@ -62,7 +63,7 @@ class Settings(BaseModel):
     def allowed_video_directories(self) -> tuple[Path, ...]:
         configured_dirs = [
             Path(segment.strip()).expanduser().resolve()
-            for segment in re.split(r"[;:\n]", self.allowed_video_dirs_raw)
+            for segment in re.split(rf"[{re.escape(os.pathsep)}\n]", self.allowed_video_dirs_raw)
             if segment.strip()
         ]
         if configured_dirs:
@@ -110,6 +111,7 @@ def get_settings() -> Settings:
         fine_interval=int(os.getenv("FINE_INTERVAL", "3")),
         processing_mode=os.getenv("PROCESSING_MODE", "two_stage"),
         api_concurrency=int(os.getenv("API_CONCURRENCY", "3")),
+        task_worker_count=int(os.getenv("TASK_WORKER_COUNT", "1")),
         api_max_retries=int(os.getenv("API_MAX_RETRIES", "6")),
         api_min_interval_seconds=float(os.getenv("API_MIN_INTERVAL_SECONDS", "1.5")),
         db_path=os.getenv("DB_PATH", "data/db/search.db"),

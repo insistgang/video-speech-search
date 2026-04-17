@@ -57,6 +57,20 @@ def test_video_segments_endpoint_returns_parsed_frame_ids(tmp_path, monkeypatch,
     get_settings.cache_clear()
 
 
+def test_list_videos_requires_api_key(tmp_path, monkeypatch, api_headers):
+    _configure_app_paths(tmp_path, monkeypatch)
+
+    with TestClient(app) as client:
+        unauthorized = client.get("/api/videos")
+        assert unauthorized.status_code == 401
+
+        response = client.get("/api/videos", headers=api_headers)
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+    get_settings.cache_clear()
+
+
 def test_process_video_endpoint_queues_task(tmp_path, monkeypatch, api_headers):
     _configure_app_paths(tmp_path, monkeypatch)
 

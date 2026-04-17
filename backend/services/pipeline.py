@@ -7,16 +7,23 @@ from pathlib import Path
 from typing import Any
 
 from backend.config import Settings
-from backend.db import get_connection
 from backend.models import FrameAnalysisRecord
 from backend.repositories import Repository
 from backend.services.frame_dedup import deduplicate_frames
 from backend.services.frame_extractor import extract_frames
 from backend.services.indexer import build_search_content
-from backend.services.local_ocr import check_keywords, extract_screen_text
+from backend.services.local_ocr import (
+    check_keywords,
+    extract_screen_text as local_extract_screen_text,
+)
 from backend.services.vision_analyzer import VisionAnalyzer
 
 ProgressCallback = Callable[[float | None, str | None, dict[str, Any] | None], Awaitable[None]]
+
+
+def extract_screen_text(image_path: str) -> str:
+    """Compatibility wrapper for OCR extraction used by tests and older callsites."""
+    return local_extract_screen_text(image_path)
 
 
 class ProcessingPipeline:
@@ -47,11 +54,11 @@ class ProcessingPipeline:
         Main entry point for video processing.
         mode: "quick" = coarse only, "two_stage" = coarse + fine, "deep" = full fine scan
         """
-        video = self.repository.get_video(video_id)
+        video = await asyncio.to_thread(self.repository.get_video, video_id)
         if video is None:
             raise ValueError(f"Video {video_id} not found")
 
-        self.repository.update_video_status(video_id, "processing")
+        await asyncio.to_thread(self.repository.update_video_status, video_id, "processing")
 
         if mode == "quick":
             await self.stage_coarse(video_id, progress_callback=progress_callback)
@@ -69,7 +76,7 @@ class ProcessingPipeline:
         else:
             raise ValueError(f"Unknown mode: {mode}. Use 'quick', 'two_stage', or 'deep'")
 
-        self.repository.update_video_status(video_id, "completed")
+        await asyncio.to_thread(self.repository.update_video_status, video_id, "completed")
         return {"video_id": video_id, "mode": mode, "status": "completed"}
 
     async def stage_coarse(
@@ -86,17 +93,18 @@ class ProcessingPipeline:
         5. Mark suspicious_segments on hit
         6. Index results to FTS
         """
-        video = self.repository.get_video(video_id)
+        video = await asyncio.to_thread(self.repository.get_video, video_id)
         if video is None:
             raise ValueError(f"Video {video_id} not found")
 
-        self._reset_coarse_stage_data(video_id)
+        await asyncio.to_thread(self._reset_coarse_stage_data, video_id)
 
         frames_dir = self.settings.frames_dir_abs / f"video_{video_id:04d}_coarse"
         frames_dir.mkdir(parents=True, exist_ok=True)
 
         # Extract frames at coarse interval
-        frames = extract_frames(
+        frames = await asyncio.to_thread(
+            extract_frames,
             video["filepath"],
             str(frames_dir),
             ffmpeg_command=self.settings.ffmpeg_command,
@@ -121,16 +129,20 @@ class ProcessingPipeline:
             return {"video_id": video_id, "stage": "coarse", "frames_extracted": 0}
 
         # Save frames to DB
-        saved_frames = self.repository.create_frames(video_id, frames)
+        saved_frames = await asyncio.to_thread(self.repository.create_frames, video_id, frames)
 
         # pHash deduplication
         frame_paths = [f["image_path"] for f in saved_frames]
-        deduped_paths = deduplicate_frames(frame_paths, self.settings.hash_threshold)
+        deduped_paths = await asyncio.to_thread(
+            deduplicate_frames,
+            frame_paths,
+            self.settings.hash_threshold,
+        )
         deduped_set = set(deduped_paths)
         total_frames = max(1, len(deduped_set))
 
         # Get keyword sets from DB
-        keyword_sets = self.repository.list_keyword_sets()
+        keyword_sets = await asyncio.to_thread(self.repository.list_keyword_sets)
         all_keywords: list[str] = []
         for ks in keyword_sets:
             all_keywords.extend(ks.get("terms", []))
@@ -155,10 +167,10 @@ class ProcessingPipeline:
                 continue
 
             # Local OCR
-            ocr_text = extract_screen_text(frame["image_path"])
+            ocr_text = await asyncio.to_thread(extract_screen_text, frame["image_path"])
 
             # Cache OCR result
-            self._cache_frame_ocr(frame["id"], video_id, ocr_text)
+            await asyncio.to_thread(self.repository.cache_frame_ocr, frame["id"], video_id, ocr_text)
 
             record = FrameAnalysisRecord(
                 frame_id=frame["id"],
@@ -178,30 +190,30 @@ class ProcessingPipeline:
                 screen_text=ocr_text,
                 timestamp=frame["timestamp"],
             )
-            self.repository.save_frame_analysis(record)
+            await asyncio.to_thread(self.repository.save_frame_analysis, record)
+            await asyncio.to_thread(
+                self.repository.upsert_fts,
+                frame_id=frame["id"],
+                video_id=video_id,
+                timestamp=frame["timestamp"],
+                content=build_search_content(record.model_dump()),
+            )
 
             # Keyword matching
             if all_keywords:
                 matched = check_keywords(ocr_text, all_keywords)
                 if matched:
                     # Create suspicious segment (single frame as segment)
-                    self._upsert_suspicious_segment(
-                        video_id=video_id,
-                        start_timestamp=frame["timestamp"],
-                        end_timestamp=frame["timestamp"],
-                        severity="medium",
-                        reason=f"关键词命中: {', '.join(matched)}",
-                        frame_ids=[frame["id"]],
+                    await asyncio.to_thread(
+                        self.repository.create_suspicious_segment,
+                        video_id,
+                        frame["timestamp"],
+                        frame["timestamp"],
+                        "medium",
+                        f"关键词命中: {', '.join(matched)}",
+                        [frame["id"]],
                     )
                     suspicious_count += 1
-
-            # Also index to FTS for searchability (even non-suspicious frames)
-            self.repository.upsert_fts(
-                frame_id=frame["id"],
-                video_id=video_id,
-                timestamp=frame["timestamp"],
-                content=build_search_content(record.model_dump()),
-            )
             processed_frames += 1
             await self._emit_progress(
                 progress_callback,
@@ -248,12 +260,19 @@ class ProcessingPipeline:
         Supports either frame-by-frame analysis or segment-level video analysis,
         depending on Settings.fine_scan_mode.
         """
-        video = self.repository.get_video(video_id)
+        video = await asyncio.to_thread(self.repository.get_video, video_id)
         if video is None:
             raise ValueError(f"Video {video_id} not found")
 
-        segments = self._get_suspicious_segments(video_id)
+        segments = await asyncio.to_thread(self._get_suspicious_segments, video_id)
         if not segments:
+            coarse_frames = await asyncio.to_thread(self._get_coarse_frames, video_id)
+            if coarse_frames:
+                return await self._stage_fine_existing_frames(
+                    video_id,
+                    coarse_frames,
+                    progress_callback,
+                )
             await self._emit_progress(
                 progress_callback,
                 1.0,
@@ -356,7 +375,8 @@ class ProcessingPipeline:
             if operation_sequence or "operation_sequence" in analysis:
                 analysis["operation_sequence"] = operation_sequence
 
-            preview_frame = self._extract_segment_preview_frame(
+            preview_frame = await asyncio.to_thread(
+                self._extract_segment_preview_frame,
                 video=video,
                 video_id=video_id,
                 segment_id=int(segment["id"]),
@@ -364,7 +384,7 @@ class ProcessingPipeline:
                 frames_dir=frames_dir,
             )
             if preview_frame is None:
-                preview_frame = self._get_segment_reference_frame(segment)
+                preview_frame = await asyncio.to_thread(self._get_segment_reference_frame, segment)
 
             if preview_frame is None:
                 await self._emit_progress(
@@ -418,8 +438,9 @@ class ProcessingPipeline:
                 summary=analysis.get("summary", ""),
                 timestamp=float(preview_frame["timestamp"]),
             )
-            self.repository.save_frame_analysis(record)
-            self.repository.upsert_fts(
+            await asyncio.to_thread(self.repository.save_frame_analysis, record)
+            await asyncio.to_thread(
+                self.repository.upsert_fts,
                 frame_id=int(preview_frame["id"]),
                 video_id=video_id,
                 timestamp=float(preview_frame["timestamp"]),
@@ -504,7 +525,8 @@ class ProcessingPipeline:
             segment_duration = end_ts - start_ts
 
             try:
-                frames = extract_frames(
+                frames = await asyncio.to_thread(
+                    extract_frames,
                     video["filepath"],
                     str(temp_dir),
                     ffmpeg_command=self.settings.ffmpeg_command,
@@ -520,9 +542,13 @@ class ProcessingPipeline:
             if not frames:
                 continue
 
-            saved_frames = self._create_frames_in_range(video_id, frames, temp_dir)
+            saved_frames = await asyncio.to_thread(self._create_frames_in_range, video_id, frames, temp_dir)
             frame_paths = [f["image_path"] for f in saved_frames]
-            deduped_paths = deduplicate_frames(frame_paths, self.settings.hash_threshold)
+            deduped_paths = await asyncio.to_thread(
+                deduplicate_frames,
+                frame_paths,
+                self.settings.hash_threshold,
+            )
             deduped_set = set(deduped_paths)
             frames_to_analyze = [f for f in saved_frames if f["image_path"] in deduped_set]
 
@@ -545,8 +571,9 @@ class ProcessingPipeline:
                     summary=analysis.get("summary", ""),
                     timestamp=frame["timestamp"],
                 )
-                self.repository.save_frame_analysis(record)
-                self.repository.upsert_fts(
+                await asyncio.to_thread(self.repository.save_frame_analysis, record)
+                await asyncio.to_thread(
+                    self.repository.upsert_fts,
                     frame_id=frame["id"],
                     video_id=video_id,
                     timestamp=frame["timestamp"],
@@ -625,7 +652,8 @@ class ProcessingPipeline:
         duration = end_ts - start_ts
 
         try:
-            frames = extract_frames(
+            frames = await asyncio.to_thread(
+                extract_frames,
                 video["filepath"],
                 str(frames_dir),
                 ffmpeg_command=self.settings.ffmpeg_command,
@@ -641,9 +669,13 @@ class ProcessingPipeline:
         if not frames:
             return {"frames_analyzed": 0, "token_usage": {}}
 
-        saved_frames = self._create_frames_in_range(video_id, frames, frames_dir)
+        saved_frames = await asyncio.to_thread(self._create_frames_in_range, video_id, frames, frames_dir)
         frame_paths = [f["image_path"] for f in saved_frames]
-        deduped_paths = deduplicate_frames(frame_paths, self.settings.hash_threshold)
+        deduped_paths = await asyncio.to_thread(
+            deduplicate_frames,
+            frame_paths,
+            self.settings.hash_threshold,
+        )
         deduped_set = set(deduped_paths)
         frames_to_analyze = [f for f in saved_frames if f["image_path"] in deduped_set]
 
@@ -667,8 +699,9 @@ class ProcessingPipeline:
                 summary=analysis.get("summary", ""),
                 timestamp=frame["timestamp"],
             )
-            self.repository.save_frame_analysis(record)
-            self.repository.upsert_fts(
+            await asyncio.to_thread(self.repository.save_frame_analysis, record)
+            await asyncio.to_thread(
+                self.repository.upsert_fts,
                 frame_id=frame["id"],
                 video_id=video_id,
                 timestamp=frame["timestamp"],
@@ -679,6 +712,119 @@ class ProcessingPipeline:
 
         return {"frames_analyzed": len(frames_to_analyze), "token_usage": token_usage}
 
+    async def _stage_fine_existing_frames(
+        self,
+        video_id: int,
+        frames: list[dict[str, Any]],
+        progress_callback: ProgressCallback | None,
+    ) -> dict[str, Any]:
+        """Fallback fine scan for default two_stage runs without suspicious segments."""
+        if not frames:
+            await self._emit_progress(
+                progress_callback,
+                1.0,
+                "fine_completed",
+                {
+                    "phase": "fine",
+                    "fine_scan_mode": "coarse_frame_fallback",
+                    "segments_processed": 0,
+                    "frames_analyzed": 0,
+                    "token_usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                },
+            )
+            return {"video_id": video_id, "stage": "fine", "segments_processed": 0}
+
+        frame_paths = [frame["image_path"] for frame in frames]
+        deduped_paths = await asyncio.to_thread(
+            deduplicate_frames,
+            frame_paths,
+            self.settings.hash_threshold,
+        )
+        deduped_set = set(deduped_paths)
+        frames_to_analyze = [frame for frame in frames if frame["image_path"] in deduped_set]
+        total_frames = max(1, len(frames_to_analyze))
+        token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        await self._emit_progress(
+            progress_callback,
+            0.0,
+            "fine_analyzing",
+            {
+                "phase": "fine",
+                "fine_scan_mode": "coarse_frame_fallback",
+                "segments_processed": 0,
+                "total_segments": 0,
+                "frames_analyzed": 0,
+                "token_usage": token_usage.copy(),
+            },
+        )
+
+        for index, frame in enumerate(frames_to_analyze, start=1):
+            analysis = await self.vision_analyzer.analyze_frame(frame["image_path"])
+            usage = analysis.pop("_usage", {})
+            record = FrameAnalysisRecord(
+                frame_id=frame["id"],
+                video_id=video_id,
+                raw_json={**analysis, "_fine_scan_mode": "coarse_frame_fallback"},
+                screen_text=analysis.get("screen_text", ""),
+                application=analysis.get("application", ""),
+                url=analysis.get("url", ""),
+                operation=analysis.get("operation", ""),
+                ai_tool_detected=bool(analysis.get("ai_tool_detected", False)),
+                ai_tool_name=analysis.get("ai_tool_name", ""),
+                code_visible=bool(analysis.get("code_visible", False)),
+                code_content_summary=analysis.get("code_content_summary", ""),
+                risk_indicators=analysis.get("risk_indicators", []),
+                summary=analysis.get("summary", ""),
+                timestamp=frame["timestamp"],
+            )
+            await asyncio.to_thread(self.repository.save_frame_analysis, record)
+            await asyncio.to_thread(
+                self.repository.upsert_fts,
+                frame_id=frame["id"],
+                video_id=video_id,
+                timestamp=frame["timestamp"],
+                content=build_search_content(record.model_dump()),
+            )
+            for key in token_usage:
+                token_usage[key] += int(usage.get(key, 0))
+            await self._emit_progress(
+                progress_callback,
+                index / total_frames,
+                "fine_analyzing",
+                {
+                    "phase": "fine",
+                    "fine_scan_mode": "coarse_frame_fallback",
+                    "segments_processed": 0,
+                    "total_segments": 0,
+                    "frames_analyzed": index,
+                    "token_usage": token_usage.copy(),
+                },
+            )
+
+        result = {
+            "video_id": video_id,
+            "stage": "fine",
+            "mode": "coarse_frame_fallback",
+            "segments_processed": 0,
+            "frames_analyzed": len(frames_to_analyze),
+            "token_usage": token_usage,
+        }
+        await self._emit_progress(
+            progress_callback,
+            1.0,
+            "fine_completed",
+            {
+                "phase": "fine",
+                "fine_scan_mode": "coarse_frame_fallback",
+                "segments_processed": 0,
+                "total_segments": 0,
+                "frames_analyzed": len(frames_to_analyze),
+                "token_usage": token_usage.copy(),
+            },
+        )
+        return result
+
     async def stage_fine_all(
         self,
         video_id: int,
@@ -688,7 +834,7 @@ class ProcessingPipeline:
         Full-frame fine scan - V1 behavior.
         Extract all frames at fine_interval and run vision analysis on all.
         """
-        video = self.repository.get_video(video_id)
+        video = await asyncio.to_thread(self.repository.get_video, video_id)
         if video is None:
             raise ValueError(f"Video {video_id} not found")
 
@@ -696,10 +842,11 @@ class ProcessingPipeline:
         frames_dir.mkdir(parents=True, exist_ok=True)
 
         # Delete existing frames for clean slate
-        self.repository.delete_frames_for_video(video_id)
+        await asyncio.to_thread(self.repository.delete_frames_for_video, video_id)
 
         # Extract frames at fine interval
-        frames = extract_frames(
+        frames = await asyncio.to_thread(
+            extract_frames,
             video["filepath"],
             str(frames_dir),
             ffmpeg_command=self.settings.ffmpeg_command,
@@ -723,11 +870,15 @@ class ProcessingPipeline:
             )
             return {"video_id": video_id, "stage": "fine_all", "frames_extracted": 0}
 
-        saved_frames = self.repository.create_frames(video_id, frames)
+        saved_frames = await asyncio.to_thread(self.repository.create_frames, video_id, frames)
 
         # pHash deduplication
         frame_paths = [f["image_path"] for f in saved_frames]
-        deduped_paths = deduplicate_frames(frame_paths, self.settings.hash_threshold)
+        deduped_paths = await asyncio.to_thread(
+            deduplicate_frames,
+            frame_paths,
+            self.settings.hash_threshold,
+        )
         deduped_set = set(deduped_paths)
         total_frames = max(1, len(deduped_set))
 
@@ -771,8 +922,9 @@ class ProcessingPipeline:
                 summary=analysis.get("summary", ""),
                 timestamp=frame["timestamp"],
             )
-            self.repository.save_frame_analysis(record)
-            self.repository.upsert_fts(
+            await asyncio.to_thread(self.repository.save_frame_analysis, record)
+            await asyncio.to_thread(
+                self.repository.upsert_fts,
                 frame_id=frame["id"],
                 video_id=video_id,
                 timestamp=frame["timestamp"],
@@ -815,21 +967,7 @@ class ProcessingPipeline:
 
     def _cache_frame_ocr(self, frame_id: int, video_id: int, ocr_text: str) -> None:
         """Cache OCR result in frame_ocr_cache table."""
-        import hashlib
-        text_hash = hashlib.md5(ocr_text.encode()).hexdigest() if ocr_text else ""
-
-        conn = get_connection(self.settings.db_path)
-        try:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO frame_ocr_cache (frame_id, video_id, ocr_text, hash, language)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (frame_id, video_id, ocr_text, text_hash, "mixed"),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        self.repository.cache_frame_ocr(frame_id, video_id, ocr_text)
 
     def _upsert_suspicious_segment(
         self,
@@ -841,41 +979,24 @@ class ProcessingPipeline:
         frame_ids: list[int],
     ) -> None:
         """Insert or update a suspicious segment."""
-        conn = get_connection(self.settings.db_path)
-        try:
-            conn.execute(
-                """
-                INSERT INTO suspicious_segments (video_id, start_timestamp, end_timestamp, severity, reason, frame_ids)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (video_id, start_timestamp, end_timestamp, severity, reason, json.dumps(frame_ids)),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        self.repository.create_suspicious_segment(
+            video_id, start_timestamp, end_timestamp, severity, reason, frame_ids
+        )
 
     def _get_suspicious_segments(self, video_id: int) -> list[dict[str, Any]]:
         """Get all suspicious segments for a video."""
-        conn = get_connection(self.settings.db_path)
-        try:
-            rows = conn.execute(
-                "SELECT * FROM suspicious_segments WHERE video_id = ? ORDER BY start_timestamp",
-                (video_id,),
-            ).fetchall()
-            return [dict(row) for row in rows]
-        finally:
-            conn.close()
+        return self.repository.list_suspicious_segments(video_id)
+
+    def _get_coarse_frames(self, video_id: int) -> list[dict[str, Any]]:
+        coarse_dir_name = f"video_{video_id:04d}_coarse"
+        frames = self.repository.get_frames_for_video(video_id)
+        coarse_frames = [frame for frame in frames if coarse_dir_name in str(frame.get("image_path", ""))]
+        return coarse_frames or frames
 
     def _reset_coarse_stage_data(self, video_id: int) -> None:
         """Clear coarse-stage artifacts so reruns do not duplicate rows or reuse stale segments."""
         self.repository.delete_frames_for_video(video_id)
-        conn = get_connection(self.settings.db_path)
-        try:
-            conn.execute("DELETE FROM suspicious_segments WHERE video_id = ?", (video_id,))
-            conn.execute("DELETE FROM frame_ocr_cache WHERE video_id = ?", (video_id,))
-            conn.commit()
-        finally:
-            conn.close()
+        self.repository.delete_coarse_artifacts(video_id)
 
     def _create_frames_in_range(
         self, video_id: int, frames: list[dict[str, Any]], frame_dir: Path
@@ -883,28 +1004,7 @@ class ProcessingPipeline:
         """Create frame records for frames extracted in a temp directory."""
         if not frames:
             return []
-
-        conn = get_connection(self.settings.db_path)
-        try:
-            inserted_ids: list[int] = []
-            for frame in frames:
-                cursor = conn.execute(
-                    """
-                    INSERT INTO video_frames (video_id, frame_index, timestamp, image_path)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (video_id, frame["frame_index"], frame["timestamp"], frame["image_path"]),
-                )
-                inserted_ids.append(cursor.lastrowid)
-            conn.commit()
-            placeholders = ", ".join("?" for _ in inserted_ids)
-            rows = conn.execute(
-                f"SELECT * FROM video_frames WHERE id IN ({placeholders}) ORDER BY timestamp ASC, id ASC",
-                inserted_ids,
-            ).fetchall()
-            return [dict(row) for row in rows]
-        finally:
-            conn.close()
+        return self.repository.insert_and_get_frames(video_id, frames)
 
     @staticmethod
     def _normalize_operation_sequence(value: Any) -> list[str]:
@@ -981,16 +1081,7 @@ class ProcessingPipeline:
         return saved_frames[0] if saved_frames else None
 
     def _get_preview_frame_index(self, video_id: int, timestamp: float, segment_id: int) -> int:
-        conn = get_connection(self.settings.db_path)
-        try:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(frame_index), -1) AS max_frame_index FROM video_frames WHERE video_id = ?",
-                (video_id,),
-            ).fetchone()
-        finally:
-            conn.close()
-
-        max_frame_index = int(row["max_frame_index"]) if row is not None else -1
+        max_frame_index = self.repository.get_max_frame_index(video_id)
         timestamp_index = int(round(timestamp * 1000))
         segment_index = max(0, segment_id)
         return max(max_frame_index + 1, timestamp_index, segment_index)

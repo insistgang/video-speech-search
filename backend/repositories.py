@@ -161,6 +161,85 @@ class Repository:
             conn.execute("DELETE FROM frame_analysis_fts WHERE video_id = ?", (video_id,))
             conn.commit()
 
+    def cache_frame_ocr(self, frame_id: int, video_id: int, ocr_text: str) -> None:
+        import hashlib
+        text_hash = hashlib.md5(ocr_text.encode()).hexdigest() if ocr_text else ""
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO frame_ocr_cache (frame_id, video_id, ocr_text, hash, language)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (frame_id, video_id, ocr_text, text_hash, "mixed"),
+            )
+            conn.commit()
+
+    def create_suspicious_segment(
+        self,
+        video_id: int,
+        start_timestamp: float,
+        end_timestamp: float,
+        severity: str,
+        reason: str,
+        frame_ids: list[int],
+    ) -> None:
+        with self.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO suspicious_segments (video_id, start_timestamp, end_timestamp, severity, reason, frame_ids)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (video_id, start_timestamp, end_timestamp, severity, reason, json.dumps(frame_ids)),
+            )
+            conn.commit()
+
+    def list_suspicious_segments(self, video_id: int) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM suspicious_segments WHERE video_id = ? ORDER BY start_timestamp",
+                (video_id,),
+            ).fetchall()
+        segments = []
+        for row in rows:
+            segment = dict(row)
+            segment["frame_ids"] = json.loads(segment.get("frame_ids", "[]"))
+            segments.append(segment)
+        return segments
+
+    def delete_coarse_artifacts(self, video_id: int) -> None:
+        with self.connection() as conn:
+            conn.execute("DELETE FROM suspicious_segments WHERE video_id = ?", (video_id,))
+            conn.execute("DELETE FROM frame_ocr_cache WHERE video_id = ?", (video_id,))
+            conn.commit()
+
+    def insert_and_get_frames(self, video_id: int, frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            inserted_ids: list[int] = []
+            for frame in frames:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO video_frames (video_id, frame_index, timestamp, image_path)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (video_id, frame["frame_index"], frame["timestamp"], frame["image_path"]),
+                )
+                inserted_ids.append(cursor.lastrowid)
+            conn.commit()
+            placeholders = ", ".join("?" for _ in inserted_ids)
+            rows = conn.execute(
+                f"SELECT * FROM video_frames WHERE id IN ({placeholders}) ORDER BY timestamp ASC, id ASC",
+                inserted_ids,
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_max_frame_index(self, video_id: int) -> int:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(frame_index), -1) AS max_frame_index FROM video_frames WHERE video_id = ?",
+                (video_id,),
+            ).fetchone()
+        return int(row["max_frame_index"]) if row is not None else -1
+
     def create_frames(self, video_id: int, frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
         with self.connection() as conn:
             for frame in frames:
@@ -185,6 +264,34 @@ class Repository:
                 (video_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def count_frames_for_video(self, video_id: int) -> int:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS frame_count FROM video_frames WHERE video_id = ?",
+                (video_id,),
+            ).fetchone()
+        return int(row["frame_count"]) if row is not None else 0
+
+    def get_frames_for_video_window(
+        self,
+        video_id: int,
+        anchor_frame_id: int,
+        *,
+        before: int = 60,
+        after: int = 60,
+    ) -> list[dict[str, Any]]:
+        frames = self.get_frames_for_video(video_id)
+        if not frames:
+            return []
+
+        anchor_index = next(
+            (index for index, frame in enumerate(frames) if int(frame["id"]) == int(anchor_frame_id)),
+            0,
+        )
+        start = max(0, anchor_index - max(0, before))
+        end = min(len(frames), anchor_index + max(0, after) + 1)
+        return frames[start:end]
 
     def get_frame(self, frame_id: int) -> dict[str, Any] | None:
         with self.connection() as conn:

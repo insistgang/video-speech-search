@@ -37,6 +37,11 @@ def test_development_mode_generates_ephemeral_key_when_api_key_missing(monkeypat
 
         # verify_api_key accepts the correct key
         assert asyncio.run(auth_module.verify_api_key(key)) == key
+        assert asyncio.run(auth_module.verify_media_api_key(key)) == key
+
+        with pytest.raises(auth_module.HTTPException) as exc_info:
+            asyncio.run(auth_module.verify_media_api_key(None))
+        assert exc_info.value.status_code == 401
     finally:
         monkeypatch.undo()
         get_settings.cache_clear()

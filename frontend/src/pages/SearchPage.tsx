@@ -12,6 +12,12 @@ import {
   formatTimeRange
 } from "../lib/presentation";
 
+export function getAiToolDetectedParam(aiFilter: string): boolean | undefined {
+  if (aiFilter === "any") return undefined;
+  if (aiFilter === "yes") return true;
+  return false;
+}
+
 export function SearchPage() {
   const [query, setQuery] = useState("");
   const [videos, setVideos] = useState<VideoRecord[]>([]);
@@ -69,7 +75,7 @@ export function SearchPage() {
         video_id: videoId ? Number(videoId) : undefined,
         time_start: timeStart ? Number(timeStart) : undefined,
         time_end: timeEnd ? Number(timeEnd) : undefined,
-        ai_tool_detected: aiFilter === "any" ? undefined : aiFilter === "yes"
+        ai_tool_detected: getAiToolDetectedParam(aiFilter)
       });
       setResults(response.results ?? []);
       setSegments(response.segments ?? []);

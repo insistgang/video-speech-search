@@ -7,13 +7,12 @@ import secrets
 from typing import Optional
 
 from fastapi import HTTPException, Security, status
-from fastapi.security import APIKeyHeader, APIKeyQuery
+from fastapi.security import APIKeyHeader
 
 from backend.config import get_settings
 
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
-media_api_key_query = APIKeyQuery(name="api_key", auto_error=False)
 logger = logging.getLogger(__name__)
 
 
@@ -71,11 +70,6 @@ async def verify_api_key(api_key: Optional[str] = Security(api_key_header)) -> s
 
 async def verify_media_api_key(
     api_key: Optional[str] = Security(api_key_header),
-    api_key_query: Optional[str] = Security(media_api_key_query),
 ) -> str:
-    """验证媒体资源访问的 API Key，支持请求头和 query 参数。"""
-    candidate_key = api_key or api_key_query
-    return _validate_api_key(
-        candidate_key,
-        missing_detail="API Key header or api_key query parameter missing",
-    )
+    """验证媒体资源访问的 API Key，仅支持请求头。"""
+    return _validate_api_key(api_key, missing_detail="X-API-Key header missing")

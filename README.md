@@ -9,7 +9,7 @@
 - **本地视频探针**：通过 `ffprobe` 获取视频元信息
 - **固定间隔抽帧**：通过 `ffmpeg` 按设定间隔提取 JPEG 帧
 - **视觉分析服务**：支持调用智谱/Kimi 等多模态模型，带并发限制与自动重试
-- **内存任务队列**：后台异步处理视频分析任务
+- **SQLite 持久化任务队列**：后台异步处理视频分析任务，支持重启恢复
 - **React + Vite 前端**：包含搜索页、导入页、任务页、结果详情页、关键词管理页
 
 ## 环境配置
@@ -35,6 +35,7 @@ $env:FINE_SCAN_MODE="video"
 $env:DATA_DIR="data"
 $env:DB_PATH="data/db/search.db"
 $env:FRAMES_DIR="data/frames"
+$env:TASK_WORKER_COUNT="1"
 $env:API_KEY="your-secure-random-key-here"
 $env:VITE_API_KEY="your-secure-random-key-here"
 $env:ALLOW_ANY_VIDEO_PATHS="false"
@@ -47,7 +48,7 @@ $env:VITE_API_BASE_URL="http://127.0.0.1:8000/api"
 安装依赖：
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt -r requirements-dev.txt
 ```
 
 启动 API 服务：
@@ -60,6 +61,12 @@ uvicorn backend.main:app --reload
 
 ```powershell
 pytest -q
+```
+
+执行数据库迁移：
+
+```powershell
+alembic upgrade head
 ```
 
 ## 前端启动
@@ -115,10 +122,11 @@ docker compose up --build -d
 - 后端会优先加载项目根目录的 `.env` 文件。`API_KEY`、`ALLOWED_VIDEO_DIRS` 等配置在重新导入 `backend.main` 时生效。
 - 本地单用户部署可设置 `ALLOW_ANY_VIDEO_PATHS=true`，允许传入主机上的任意绝对路径。
 - `FINE_SCAN_MODE=video` 启用分段级视频理解。后端仍为每个可疑片段保存一张预览帧，以确保现有搜索结果和详情页正常展示。
-- 受保护媒体资源（`/api/frames/*/image`、`/api/videos/*/file`）支持通过 `X-API-Key` 请求头或 `api_key` 查询参数访问，便于 `<img>` 和 `<video>` 标签直接加载。
+- 受保护媒体资源已统一改为 `X-API-Key` 请求头鉴权；前端在开发环境通过 Vite `/media/*` 代理、在 Docker 部署中通过 Nginx `/media/*` 代理自动注入该请求头。
 - `ALLOWED_VIDEO_DIRS` 使用系统路径分隔符：Windows 用 `;`，Linux/macOS 用 `:`。
 - 请确保 `API_KEY` 与 `VITE_API_KEY` 设为相同值，以保证浏览器请求与媒体 URL 使用一致的凭证。
 - `FINE_SCAN_MODE=frame` 保持原有的逐帧分析模式；`FINE_SCAN_MODE=video` 则将可疑片段直接发送给多模态模型并索引返回的片段分析结果。
+- `TASK_WORKER_COUNT` 用于控制后台队列 worker 数；`API_CONCURRENCY` 仅控制视觉模型并发与限流。
 - `VISION_ANALYZER_MODE=live` 模式下，视频处理需要配置有效的 `VISION_API_KEY`。
 - 若仅用于 UI 调试或本地流程验证，没有真实 API Key 时，可设置 `VISION_ANALYZER_MODE=mock`。
 - 项目仍兼容旧版 `MOONSHOT_API_KEY` / `MOONSHOT_BASE_URL` 环境变量。
@@ -132,4 +140,4 @@ docker compose up --build -d
   $env:VISION_ANALYZER_MODE="kimi_cli"
   ```
 
-- 当前任务队列为内存级实现，后端重启后不会自动恢复中断的任务。
+- 当前任务队列已使用 SQLite 持久化实现，后端重启后会自动恢复 pending 任务。

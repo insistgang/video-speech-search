@@ -417,6 +417,59 @@ def test_pipeline_stage_coarse_resets_previous_rows(tmp_path):
     assert len(frames) == 2
 
 
+def test_pipeline_two_stage_falls_back_to_analyzing_coarse_frames_without_keywords(tmp_path):
+    """Test that two_stage still performs vision analysis when no keyword set exists."""
+    settings = Settings(
+        vision_analyzer_mode="mock",
+        db_path=str(tmp_path / "test.db"),
+        data_dir=str(tmp_path / "data"),
+        frames_dir=str(tmp_path / "data" / "frames"),
+        coarse_interval=10,
+        hash_threshold=8,
+    )
+
+    initialize_database(settings.db_path)
+    repo = Repository(settings.db_path)
+    _, video_record = _create_mock_video(tmp_path)
+    video = repo.create_video_asset(video_record)
+
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir(parents=True)
+    frame_paths = []
+
+    from PIL import Image
+
+    for i in range(2):
+        img_path = frames_dir / f"frame_{i+1:04d}.jpg"
+        Image.new("RGB", (64, 64), color=(i * 90, 40, 80)).save(img_path)
+        frame_paths.append({
+            "frame_index": i,
+            "timestamp": float(i * 10),
+            "image_path": str(img_path.resolve()),
+        })
+
+    def fake_extract_frames(*args, **kwargs):
+        return frame_paths
+
+    mock_analyzer = _mock_vision_analyzer()
+
+    with patch("backend.services.pipeline.extract_frames", fake_extract_frames), patch(
+        "backend.services.pipeline.extract_screen_text", return_value="screen text"
+    ), patch(
+        "backend.services.pipeline.deduplicate_frames",
+        side_effect=lambda paths, _threshold=None: paths,
+    ):
+        pipeline = ProcessingPipeline(settings=settings, repository=repo, vision_analyzer=mock_analyzer)
+        result = __import__("asyncio").run(pipeline.process_video(video_id=video["id"], mode="two_stage"))
+
+    assert result["status"] == "completed"
+    analyses = [repo.get_frame_analysis(frame["id"]) for frame in repo.get_frames_for_video(video["id"])]
+    assert len(analyses) == 2
+    assert all(analysis is not None for analysis in analyses)
+    assert all(analysis["summary"] == "Test summary" for analysis in analyses if analysis is not None)
+    assert mock_analyzer.analyze_frame.await_count == 2
+
+
 def test_pipeline_process_video_quick_mode(tmp_path, monkeypatch):
     """Test that process_video quick mode only runs coarse stage."""
     settings = Settings(

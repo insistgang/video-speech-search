@@ -78,9 +78,11 @@ async def import_folder(
 
 @router.get("")
 @limiter.limit("60/minute")
-def list_videos(request: Request, context=Depends(get_context)) -> list[dict]:
-    import logging
-    logging.warning("=== list_videos called ===")
+def list_videos(
+    request: Request,
+    context=Depends(get_context),
+    _: str = Depends(verify_api_key),
+) -> list[dict]:
     return context.repository.list_videos()
 
 

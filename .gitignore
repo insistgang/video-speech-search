@@ -2,6 +2,13 @@
 __pycache__/
 .pytest_cache/
 .mypy_cache/
+.tmp/
+.tmp_pytest_video/
+.coverage
+.coverage.*
+pytest-cache-files-*/
+codex_tmp_tests/
+tmp*/
 node_modules/
 dist/
 build/

@@ -3,6 +3,32 @@ import { api, HealthStatus, TaskRecord } from "../lib/api";
 import { formatErrorMessage, formatTaskStage, formatTaskStatus, formatTokenUsage } from "../lib/presentation";
 import { getLatestTasks } from "../lib/tasks";
 
+function getDetailNumber(details: Record<string, unknown>, key: string): number {
+  const value = details[key];
+  if (typeof value === "number") return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getTokenUsage(details: Record<string, unknown>): number {
+  const tokenUsage = details.token_usage;
+  if (!isRecord(tokenUsage)) return 0;
+  const totalTokens = tokenUsage.total_tokens;
+  if (typeof totalTokens === "number") return totalTokens;
+  if (typeof totalTokens === "string") {
+    const parsed = Number(totalTokens);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  return 0;
+}
+
 export function TasksPage() {
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [health, setHealth] = useState<HealthStatus | null>(null);
@@ -97,8 +123,8 @@ export function TasksPage() {
               {String(task.details.processed_frames ?? 0)}
               {task.details.frame_count ? ` / ${String(task.details.frame_count)}` : ""}
             </span>
-            <span>{task.skipped_frames ?? task.details.skipped_frames ?? 0}</span>
-            <span>{formatTokenUsage((task.details.token_usage as { total_tokens?: number } | undefined)?.total_tokens ?? 0, health?.vision_analyzer_mode)}</span>
+            <span>{task.skipped_frames ?? getDetailNumber(task.details, "skipped_frames")}</span>
+            <span>{formatTokenUsage(getTokenUsage(task.details), health?.vision_analyzer_mode)}</span>
             {task.error_message ? <span className="error">{formatErrorMessage(task.error_message)}</span> : <span>无</span>}
             <span>
               <button

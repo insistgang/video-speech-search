@@ -15,7 +15,7 @@
 
 这是一个内部视频排查工具。目标视频是**无语音的屏幕录制视频**（考试场景的作弊行为检测），需要通过多模态大模型理解视频画面内容，然后建立索引供关键词检索。
 
-核心流程：视频导入 → FFmpeg 关键帧提取 → Kimi K2.5 API 画面理解 → 结构化文本存储 → 全文检索 → 结果展示
+核心流程：视频导入 → FFmpeg 关键帧提取 → 多模态视觉模型 API 画面理解 → 结构化文本存储 → 全文检索 → 结果展示
 
 ## 技术栈要求
 
@@ -23,8 +23,8 @@
 - **前端**: React + TypeScript + TailwindCSS（或 Next.js）
 - **数据库**: SQLite + FTS5 全文检索
 - **视频处理**: FFmpeg（关键帧提取）
-- **多模态 API**: Kimi K2.5（通过 OpenAI SDK 兼容接口调用）
-- **任务队列**: 使用 asyncio + 内存队列（MVP 阶段），后续可升级为 Celery
+- **多模态 API**: 默认 Zhipu GLM-4.6v-flashx（通过 OpenAI SDK 兼容接口调用，同时支持 Moonshot / Kimi CLI）
+- **任务队列**: SQLite 持久化任务队列（SQLiteTaskQueue），支持重启恢复
 
 ## 项目结构
 
@@ -107,8 +107,8 @@ import json
 from openai import OpenAI
 
 client = OpenAI(
-    api_key=os.environ.get("MOONSHOT_API_KEY"),
-    base_url="https://api.moonshot.cn/v1",
+    api_key=os.environ.get("VISION_API_KEY") or os.environ.get("MOONSHOT_API_KEY"),
+    base_url=os.environ.get("VISION_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"),
 )
 
 SCREEN_ANALYSIS_PROMPT = """你是一个屏幕录制视频内容分析专家。请分析这个屏幕截图，严格返回以下 JSON 格式（不要返回其他内容）：
@@ -141,7 +141,7 @@ async def analyze_frame(image_path: str) -> dict:
         image_base64 = base64.b64encode(f.read()).decode("utf-8")
 
     completion = client.chat.completions.create(
-        model="kimi-k2.5",
+        model=os.environ.get("MODEL_NAME", "glm-4.6v-flashx"),
         messages=[{
             "role": "user",
             "content": [
@@ -254,7 +254,7 @@ PUT    /api/keywords/{id}          # 更新关键词库
 DELETE /api/keywords/{id}          # 删除关键词库
 POST   /api/keywords/{id}/scan     # 基于词库执行筛查
 
-GET    /api/frames/{video_id}      # 获取视频的所有帧
+GET    /api/frames/video/{video_id} # 获取视频的所有帧
 GET    /api/frames/{frame_id}/image # 获取帧截图
 GET    /api/frames/{frame_id}/analysis # 获取帧分析结果
 ```
@@ -306,7 +306,9 @@ GET    /api/frames/{frame_id}/analysis # 获取帧分析结果
 ### 环境变量
 
 ```bash
-export MOONSHOT_API_KEY="your-api-key-here"
+export VISION_PROVIDER="zhipu"
+export VISION_API_KEY="your-api-key-here"
+export VISION_BASE_URL="https://open.bigmodel.cn/api/paas/v4"
 export FRAME_INTERVAL=3          # 抽帧间隔（秒）
 export API_CONCURRENCY=3         # API 并发数
 export DB_PATH="data/db/search.db"

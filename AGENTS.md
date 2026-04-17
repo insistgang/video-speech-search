@@ -4,17 +4,19 @@
 
 ## 项目概述
 
-这是一个**视频画面内容检索 MVP**，用于导入无声屏幕录制视频，使用 FFmpeg 提取 JPEG 帧，将帧发送给 Kimi K2.5 进行结构化理解，将扁平化文本索引到 SQLite FTS5 中，并提供 React UI 用于查看匹配结果。
+这是一个**视频画面内容检索 MVP**，用于导入无声屏幕录制视频，使用 FFmpeg 提取 JPEG 帧，将帧发送给多模态视觉模型进行结构化理解，将扁平化文本索引到 SQLite FTS5 中，并提供 React UI 用于查看匹配结果。
 
 **使用场景**：屏幕录制视频分析，用于检测考试/编程场景中的 AI 工具使用、可疑操作和预先准备好的内容。
 
 ### 核心功能
 - 导入单个视频或批量导入文件夹
 - 通过 FFmpeg 以可配置间隔提取帧
-- 使用 Kimi K2.5 API 进行多模态 AI 分析
+- 使用多模态视觉模型分析关键帧（默认 Zhipu GLM-4.6v-flashx，兼容 Moonshot / OpenAI 格式）
 - 通过 SQLite FTS5 进行全文搜索
+- 支持 quick / two_stage / deep 三种处理模式
 - 关键词集合管理用于批量筛选
 - 带视频播放的帧级结果详情
+- 任务失败后可从前端或 API 重试
 
 ## 技术栈
 
@@ -23,9 +25,9 @@
 |-----------|------------|
 | 框架 | FastAPI (Python 3.12+) |
 | 数据库 | SQLite with FTS5 extension |
-| AI 服务 | Moonshot Kimi K2.5 via OpenAI-compatible API |
+| AI 服务 | Zhipu GLM-4.6v-flashx（兼容 OpenAI 格式，同时支持 Moonshot / Kimi CLI） |
 | 视频处理 | FFmpeg (ffprobe + ffmpeg) |
-| 任务队列 | 内存中异步队列 |
+| 任务队列 | SQLite 持久化任务队列（`SQLiteTaskQueue`），支持重启恢复 |
 | 配置 | Pydantic 设置与环境变量 |
 
 ### 前端
@@ -40,10 +42,15 @@
 
 ### 依赖
 - `fastapi`, `uvicorn` - Web 框架和服务器
-- `openai` - Moonshot API 客户端 (兼容 OpenAI)
+- `openai` - 兼容 OpenAI 格式的 API 客户端
 - `pydantic` - 数据验证和设置
 - `python-multipart` - 文件上传处理
 - `pytest` - 测试框架
+- `slowapi` - 请求限流
+- `jieba` - 中文分词
+- `python-dotenv` - 环境变量加载
+- `imagehash`, `Pillow` - 帧去重
+- `rapidocr-onnxruntime` - 本地 OCR 粗筛
 
 ## 项目结构
 
@@ -56,18 +63,22 @@
 │   │   ├── health.py          # 健康检查端点
 │   │   ├── keywords.py        # 关键词集合 CRUD
 │   │   ├── search.py          # 搜索端点
+│   │   ├── stats.py           # 平台统计端点
 │   │   ├── tasks.py           # 任务队列管理
-│   │   └── videos.py          # 视频导入和列表
+│   │   └── videos.py          # 视频导入、列表、处理、重扫
 │   ├── prompts/               # AI 提示模板
-│   │   └── screen_analysis.py # Kimi K2.5 分析提示
+│   │   └── screen_analysis.py # 视觉分析提示
 │   ├── services/              # 业务逻辑
 │   │   ├── frame_extractor.py # FFmpeg 帧提取
+│   │   ├── frame_dedup.py     # 帧去重
 │   │   ├── indexer.py         # 搜索内容构建器
 │   │   ├── json_utils.py      # JSON 解析工具
+│   │   ├── pipeline.py        # 核心处理流水线（coarse/fine/deep）
 │   │   ├── searcher.py        # FTS 搜索服务
-│   │   ├── task_queue.py      # 内存中任务队列
+│   │   ├── task_queue.py      # SQLite 持久化任务队列
 │   │   ├── video_import.py    # 视频导入服务
-│   │   └── vision_analyzer.py # Kimi API 包装器
+│   │   └── vision_analyzer.py # 视觉模型 API 包装器
+│   ├── auth.py                # API Key 认证
 │   ├── config.py              # Pydantic 设置
 │   ├── db.py                  # SQLite 模式和连接
 │   ├── main.py                # FastAPI 应用和生命周期
@@ -86,7 +97,7 @@
 │   │   │   ├── KeywordsPage.tsx # 关键词管理
 │   │   │   ├── ResultDetailPage.tsx # 帧详情视图
 │   │   │   ├── SearchPage.tsx # 主搜索 UI
-│   │   │   └── TasksPage.tsx  # 任务监控
+│   │   │   └── TasksPage.tsx  # 任务监控（支持重试）
 │   │   ├── test/              # 测试设置
 │   │   ├── App.tsx            # 根组件
 │   │   ├── main.tsx           # 入口点
@@ -147,19 +158,23 @@ npm run test
 复制 `.env.example` 并进行配置：
 
 ```powershell
-$env:MOONSHOT_API_KEY="your-key"
-$env:MOONSHOT_BASE_URL="https://api.moonshot.cn/v1"
+$env:VISION_PROVIDER="zhipu"
+$env:VISION_API_KEY="your-key"
+$env:VISION_BASE_URL="https://open.bigmodel.cn/api/paas/v4"
 $env:VISION_ANALYZER_MODE="live"      # live | mock | kimi_cli
 $env:KIMI_CLI_COMMAND="kimi"
 $env:FRAME_INTERVAL="3"               # 帧间隔秒数
 $env:API_CONCURRENCY="3"              # 并发 API 调用数
+$env:API_KEY="your-secure-random-key-here"
+$env:CORS_ORIGINS="http://localhost:5173,http://localhost:3000"
+$env:ALLOWED_VIDEO_DIRS=".;.\作弊视频;/app/videos"
 $env:DB_PATH="data/db/search.db"
 $env:FRAMES_DIR="data/frames"
 $env:VITE_API_BASE_URL="http://127.0.0.1:8000/api"
 ```
 
 **视觉分析器模式：**
-- `live`: 调用 Moonshot API (需要 API key)
+- `live`: 调用远程 API (需要 API key)
 - `mock`: 返回模拟分析 (用于无 API 的 UI 测试)
 - `kimi_cli`: 使用本地 Kimi CLI 配合 coding/v1 API
 
@@ -190,8 +205,12 @@ $env:VITE_API_BASE_URL="http://127.0.0.1:8000/api"
 | POST | `/api/videos/import-folder` | 批量导入文件夹 |
 | GET | `/api/videos/{id}` | 获取视频及帧信息 |
 | GET | `/api/videos/{id}/file` | 流式传输视频文件 |
+| POST | `/api/videos/{id}/process` | 按指定模式重新处理视频 |
+| GET | `/api/videos/{id}/segments` | 获取视频可疑时间段 |
+| POST | `/api/videos/{id}/rescan` | 对指定 stage 重新扫描 |
 | GET | `/api/tasks` | 列出处理任务 |
-| GET | `/api/tasks/{id}` | 获取任务详情 |
+| GET | `/api/tasks/{id}/progress` | 获取任务详情/进度 |
+| POST | `/api/tasks/{id}/retry` | 重试失败任务 |
 | POST | `/api/search` | 搜索已索引的帧 |
 | GET | `/api/search/results/{frame_id}` | 获取结果详情 |
 | GET | `/api/keywords` | 列出关键词集合 |
@@ -199,18 +218,24 @@ $env:VITE_API_BASE_URL="http://127.0.0.1:8000/api"
 | PUT | `/api/keywords/{id}` | 更新关键词集合 |
 | DELETE | `/api/keywords/{id}` | 删除关键词集合 |
 | POST | `/api/keywords/{id}/scan` | 使用关键词集合扫描 |
+| GET | `/api/frames/video/{video_id}` | 获取视频的帧列表 |
 | GET | `/api/frames/{frame_id}/image` | 获取帧图片 |
+| GET | `/api/frames/{frame_id}/analysis` | 获取帧分析结果 |
+| GET | `/api/stats` | 平台统计 |
 
 ## 数据库模式
 
 ### 表
 - `video_assets` - 视频元数据 (文件名、路径、时长、格式、分辨率、状态)
-- `processing_tasks` - 后台任务跟踪 (video_id、类型、状态、进度、错误)
+- `processing_tasks` - 后台任务跟踪 (video_id、类型、状态、进度、错误、details)
 - `video_frames` - 提取的帧元数据 (video_id、索引、时间戳、图片路径)
-- `frame_analysis` - AI 分析结果 (来自 Kimi K2.5 的结构化字段)
+- `frame_analysis` - AI 分析结果 (结构化字段)
 - `keyword_sets` - 用户定义的关键词组
 - `search_query_logs` - 搜索审计日志
 - `frame_analysis_fts` - 用于全文搜索的虚拟 FTS5 表
+- `suspicious_segments` - 可疑时间段聚合
+- `task_queue` - 持久化任务队列作业
+- `frame_ocr_cache` - 本地 OCR 结果缓存
 
 ### frame_analysis 中的关键字段
 - `screen_text` - 帧中的 OCR 文本
@@ -250,9 +275,9 @@ npm run test
 
 ## 安全注意事项
 
-1. **API Keys**: Moonshot API key 存储在环境变量中，永不提交
-2. **CORS**: 当前允许所有来源 (`["*"]`) - 生产环境需限制
-3. **文件访问**: 后端仅从配置的目录提供视频/帧文件
+1. **API Keys**: 视觉模型 API key 和 `API_KEY` 均存储在环境变量中，永不提交到版本控制
+2. **CORS**: 通过 `CORS_ORIGINS` 环境变量配置允许来源，不再默认允许所有来源
+3. **文件访问**: 后端通过 `ALLOWED_VIDEO_DIRS` 白名单限制可访问的视频路径
 4. **SQL 注入**: 通过 SQLite 使用参数化查询
 5. **XSS**: React 内置转义；如 API 响应作为 HTML 显示需确保已清理
 
@@ -260,23 +285,23 @@ npm run test
 
 ### 帧处理流水线
 1. 视频导入创建 `video_assets` 记录
-2. 任务排队进行后台处理
-3. FFmpeg 按 `FRAME_INTERVAL` 秒数提取帧
-4. 每帧发送给 Kimi K2.5 分析
+2. 任务进入 `SQLiteTaskQueue` 持久化队列，支持重启后恢复
+3. FFmpeg 按 `FRAME_INTERVAL` 秒数提取帧（V2 支持片段级精确提取）
+4. 分析阶段支持 `quick`（仅粗筛）、`two_stage`（粗筛+精扫）、`deep`（全量精扫）三种模式
 5. 结果存储在 `frame_analysis` 并索引到 FTS5
-6. 全程更新任务进度
+6. 全程更新任务进度，失败任务可通过 `/tasks/{id}/retry` 重试
 
 ### 重要实现细节
-- 任务队列是**内存中**的 - 重启后作业不会持久化
+- 任务队列已改为 **SQLite 持久化** (`SQLiteTaskQueue`)，重启后 pending 任务会自动恢复
 - 帧图片存储在 `FRAMES_DIR/video_{id:04d}/`
-- FTS5 使用 `frame_analysis_fts` 虚拟表进行搜索
-- Repository 模式将 SQL 与业务逻辑隔离
+- FTS5 使用 `frame_analysis_fts` 虚拟表进行搜索，并通过 trigger 自动同步
+- `frame_extractor.py` 使用 `validate_path()` 正则过滤防止 shell 特殊字符注入
 - VisionAnalyzer 支持三种模式以适应不同开发场景
 
 ### 前端路由
 - `/` - 搜索页（默认）
 - `/import` - 视频导入
-- `/tasks` - 任务监控
+- `/tasks` - 任务监控（支持重试）
 - `/results/{frameId}` - 帧详情视图
 - `/keywords` - 关键词管理
 

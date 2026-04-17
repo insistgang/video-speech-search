@@ -4,6 +4,7 @@ from backend.bootstrap import ensure_environment_loaded
 
 ensure_environment_loaded()
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -85,7 +86,8 @@ class ProcessingService:
             details["target_stage"] = target_stage
 
         # Create task record in processing_tasks table
-        task = self.repository.create_task(
+        task = await asyncio.to_thread(
+            self.repository.create_task,
             video_id=video_id,
             task_type="video_process",
             status="pending",
@@ -100,7 +102,7 @@ class ProcessingService:
             stage=target_stage or "coarse",
         )
         details["queue_job_id"] = job_id
-        updated_task = self.repository.update_task(task["id"], details=details)
+        updated_task = await asyncio.to_thread(self.repository.update_task, task["id"], details=details)
         return updated_task or task
 
     async def _handle_video_process(self, ctx: Any) -> None:
@@ -111,7 +113,7 @@ class ProcessingService:
         video_id = ctx.video_id
 
         # Get the latest task for this video
-        tasks = self.repository.list_tasks(active_only=False)
+        tasks = await asyncio.to_thread(self.repository.list_tasks, active_only=False)
         video_tasks = [t for t in tasks if t["video_id"] == video_id and t["task_type"] == "video_process"]
         if not video_tasks:
             await ctx.mark_failed("No task record found for video")
@@ -142,7 +144,8 @@ class ProcessingService:
             if progress is not None:
                 current_progress = progress
 
-            self.repository.update_task(
+            await asyncio.to_thread(
+                self.repository.update_task,
                 task_id,
                 progress=current_progress,
                 details=current_details.copy(),
@@ -155,7 +158,8 @@ class ProcessingService:
 
         try:
             await ctx.mark_running(stage=str(target_stage or "processing"))
-            self.repository.update_task(
+            await asyncio.to_thread(
+                self.repository.update_task,
                 task_id,
                 status="running",
                 progress=0.0,
@@ -163,14 +167,14 @@ class ProcessingService:
             )
 
             if action == "rescan":
-                self.repository.update_video_status(video_id, "processing")
+                await asyncio.to_thread(self.repository.update_video_status, video_id, "processing")
                 if target_stage == "coarse":
                     await self.processing_pipeline.stage_coarse(video_id, progress_callback=report_progress)
                 elif target_stage == "fine":
                     await self.processing_pipeline.stage_fine(video_id, progress_callback=report_progress)
                 else:
                     raise ValueError(f"Unsupported rescan target_stage: {target_stage}")
-                self.repository.update_video_status(video_id, "completed")
+                await asyncio.to_thread(self.repository.update_video_status, video_id, "completed")
             else:
                 await self.processing_pipeline.process_video(
                     video_id,
@@ -180,7 +184,8 @@ class ProcessingService:
 
             await ctx.mark_completed(result={"mode": mode, "video_id": video_id})
             current_details["stage"] = "completed"
-            self.repository.update_task(
+            await asyncio.to_thread(
+                self.repository.update_task,
                 task_id,
                 status="completed",
                 progress=1.0,
@@ -189,10 +194,11 @@ class ProcessingService:
         except Exception as exc:
             error_msg = str(exc)
             if action == "rescan":
-                self.repository.update_video_status(video_id, "failed")
+                await asyncio.to_thread(self.repository.update_video_status, video_id, "failed")
             await ctx.mark_failed(error_msg)
             current_details["stage"] = "failed"
-            self.repository.update_task(
+            await asyncio.to_thread(
+                self.repository.update_task,
                 task_id,
                 status="failed",
                 progress=1.0,
@@ -218,7 +224,7 @@ def build_context(settings: Settings) -> AppContext:
     initialize_database(settings.db_path)
     logger.info("Fine scan mode: %s", settings.fine_scan_mode)
     repository = Repository(settings.db_path)
-    task_queue = SQLiteTaskQueue(db_path=settings.db_path, worker_count=settings.api_concurrency)
+    task_queue = SQLiteTaskQueue(db_path=settings.db_path, worker_count=settings.task_worker_count)
     vision_analyzer = VisionAnalyzer(
         api_key=settings.api_key,
         base_url=settings.base_url,
