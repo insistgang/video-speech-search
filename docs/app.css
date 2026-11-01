@@ -81,6 +81,13 @@ pre {
   color: #f6f1e7;
 }
 
+.brand-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  margin-bottom: 14px;
+}
+
 .brand h1,
 .panel h2,
 .result-card h3,
