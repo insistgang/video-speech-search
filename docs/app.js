@@ -32,6 +32,7 @@ const main = document.getElementById("main");
 let view = "search";
 let detailId = null;
 let showHistory = false;
+let editingKey = null;
 let message = "导入后这里会显示队列进度。";
 
 function esc(value) {
@@ -96,7 +97,7 @@ function renderImport() {
         <button type="submit">导入并排队</button></form></div>
     <div class="panel"><p class="eyebrow">批量导入</p><h2>导入文件夹</h2>
       <form id="folder-form" class="form-stack"><label>文件夹路径<input id="folder-path" placeholder="示例/batch-01" /></label><button type="submit">批量导入</button></form></div>
-    <div class="panel panel-wide"><p class="eyebrow">导入状态</p><p>${esc(message)}</p><p class="muted">网页示例不会读取真实路径，只会把名称加入浏览器里的示例库。</p></div>
+    <div class="panel panel-wide"><p class="eyebrow">导入状态</p><p>${esc(message)}</p><div class="import-progress-card"><div class="task-progress-meta"><span>活跃：${db.tasks.filter((task) => task.status === "running" || task.status === "pending").length}</span><span>完成：${db.tasks.filter((task) => task.status === "completed").length}</span><span>失败：${db.tasks.filter((task) => task.status === "failed").length}</span></div></div><p class="muted">网页示例不会读取真实路径，只会把名称加入浏览器里的示例库。</p></div>
     <div class="panel panel-wide"><p class="eyebrow">处理进度</p><h2>当前导入任务</h2><div class="task-progress-list">${cards || '<p class="empty">导入后这里会实时显示任务进度。</p>'}</div></div>
     <div class="panel panel-wide"><p class="eyebrow">视频库</p><h2>当前已导入视频</h2><div class="table"><div class="table-row table-head table-row-videos"><span>文件名</span><span>状态</span><span>时长</span><span>分辨率</span></div>${rows}</div></div>
   </section>`;
@@ -110,10 +111,11 @@ function renderTasks() {
     <div class="table"><div class="table-row table-head table-row-tasks"><span>ID</span><span>视频</span><span>状态</span><span>阶段</span><span>进度</span><span>帧数</span><span>跳过帧数</span><span>Token 用量</span><span>错误</span><span>操作</span></div>${rows}</div></section>`;
 }
 function renderKeywords() {
-  const cards = db.keywords.map((item) => `<article class="keyword-card"><h3>${esc(item.name)}</h3><p>${esc(item.category)}</p><p>${esc(item.terms.join("，"))}</p><div class="action-row"><button class="button-secondary" data-scan="${item.id}">立即扫描</button><button class="button-secondary" data-del="${item.id}">删除</button></div></article>`).join("");
+  const editing = db.keywords.find((item) => item.id === editingKey);
+  const cards = db.keywords.map((item) => `<article class="keyword-card"><h3>${esc(item.name)}</h3><p>${esc(item.category)}</p><p>${esc(item.terms.join("，"))}</p><div class="action-row"><button class="button-secondary" data-edit-key="${item.id}">编辑</button><button class="button-secondary" data-scan="${item.id}">立即扫描</button><button class="button-secondary" data-del="${item.id}">删除</button></div></article>`).join("");
   return `<section class="panel-grid">
-    <div class="panel"><p class="eyebrow">规则词库</p><h2>创建关键词集</h2>
-      <form id="key-form" class="form-stack"><label>名称<input id="key-name" /></label><label>分类<input id="key-cat" /></label><label>关键词<input id="key-terms" placeholder="ChatGPT，表格，导出" /></label><button type="submit">保存关键词集</button></form></div>
+    <div class="panel"><p class="eyebrow">规则词库</p><h2>${editing ? "编辑关键词集" : "创建关键词集"}</h2>
+      <form id="key-form" class="form-stack"><label>名称<input id="key-name" value="${editing ? esc(editing.name) : ""}" /></label><label>分类<input id="key-cat" value="${editing ? esc(editing.category) : ""}" /></label><label>关键词<input id="key-terms" value="${editing ? esc(editing.terms.join("，")) : ""}" placeholder="ChatGPT，表格，导出" /></label><button type="submit">保存关键词集</button>${editing ? `<button type="button" class="button-secondary" id="cancel-key">取消编辑</button>` : ""}</form></div>
     <div class="panel panel-wide"><p class="eyebrow">词库列表</p><h2>已有关键词集</h2><div class="keyword-list">${cards || '<p class="empty">当前还没有关键词集。</p>'}</div></div>
     <div class="panel panel-wide" id="scan-box"><p class="eyebrow">扫描结果</p><h2>请选择一个关键词集进行扫描</h2><p class="empty">当前还没有扫描结果。</p></div>
   </section>`;
@@ -141,6 +143,7 @@ function renderDetail() {
       <div class="detail-item"><span class="detail-label">风险标签</span><span>${frame.risk.length ? esc(frame.risk.join("、")) : "无"}</span></div>
       <div class="detail-item detail-item-wide"><span class="detail-label">画面摘要</span><span>${esc(frame.summary)}</span></div>
       <div class="detail-item detail-item-wide"><span class="detail-label">操作描述</span><span>${esc(frame.operation)}</span></div>
+      <div class="detail-item detail-item-wide"><span class="detail-label">操作序列</span><span>${esc(near.map((item) => item.operation).filter(Boolean).join(" -> ") || "暂无操作序列")}</span></div>
       <div class="detail-item detail-item-wide"><span class="detail-label">可见文字</span><span>${esc(frame.text)}</span></div>
       <div class="detail-item detail-item-wide"><span class="detail-label">代码摘要</span><span>${esc(frame.code || "未检测到代码")}</span></div>
     </div></div>
@@ -156,6 +159,22 @@ function matches(frame, query, videoId, ai, start, end) {
   const words = query.split(/\s+/).filter(Boolean);
   const blob = `${frame.text} ${frame.summary} ${frame.app} ${frame.aiName} ${videoOf(frame.video_id).filename}`;
   return words.every((word) => blob.toLowerCase().includes(word.toLowerCase()));
+}
+function segmentBlock(hits) {
+  const groups = new Map();
+  hits.forEach((frame) => {
+    const bucket = groups.get(frame.video_id) || [];
+    bucket.push(frame);
+    groups.set(frame.video_id, bucket);
+  });
+  const cards = [...groups.values()].map((list) => {
+    list.sort((a, b) => a.time - b.time);
+    const video = videoOf(list[0].video_id);
+    const risks = [...new Set(list.flatMap((frame) => frame.risk))];
+    const ai = list.find((frame) => frame.ai);
+    return `<a class="segment-card" data-detail="${list[0].id}" href="#detail-${list[0].id}"><div><p class="eyebrow">片段 ${list[0].time.toFixed(1)}–${list[list.length - 1].time.toFixed(1)} 秒</p><h3>${esc(video.filename)}</h3><p>${esc(list[0].summary)}</p></div><div class="meta meta-segment"><span class="badge badge-source">画面文字</span><span>起止：${list[0].time.toFixed(1)}–${list[list.length - 1].time.toFixed(1)} 秒</span><span>时长：${Math.max(0, list[list.length - 1].time - list[0].time).toFixed(1)} 秒</span><span>证据帧：${list.length} 帧</span><span>${ai ? `AI 工具：${esc(ai.aiName)}` : "未明确识别 AI 工具"}</span><span>${risks.length ? esc(risks.join("、")) : "无风险标签"}</span></div></a>`;
+  }).join("");
+  return `<div class="panel panel-wide"><p class="eyebrow">可疑时间段</p><h2>聚合后的可疑片段</h2><p class="muted">共识别出 ${groups.size} 段可疑区间，点击可跳到该段首帧。</p><div class="segment-list">${cards}</div></div>`;
 }
 function addVideo(name) {
   const id = db.nextId++;
@@ -188,8 +207,16 @@ main.addEventListener("click", (event) => {
     const box = document.getElementById("scan-box");
     box.innerHTML = `<p class="eyebrow">扫描结果</p><h2>${esc(set.name)} 的命中结果</h2><div class="results">${hits.map(resultCard).join("") || '<p class="empty">这个词库没有命中示例画面。</p>'}</div>`;
   }
+  const editKey = event.target.closest("[data-edit-key]");
+  if (editKey) { editingKey = Number(editKey.dataset.editKey); render(); }
+  if (event.target.id === "cancel-key") { editingKey = null; render(); }
   const del = event.target.closest("[data-del]");
-  if (del) { db.keywords = db.keywords.filter((item) => String(item.id) !== del.dataset.del); save(); render(); }
+  if (del) {
+    db.keywords = db.keywords.filter((item) => String(item.id) !== del.dataset.del);
+    if (String(editingKey) === del.dataset.del) editingKey = null;
+    save();
+    render();
+  }
 });
 main.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -201,7 +228,7 @@ main.addEventListener("submit", (event) => {
     const hits = db.frames.filter((frame) => matches(frame, query, document.getElementById("video").value, document.getElementById("ai").value, document.getElementById("start").value, document.getElementById("end").value));
     msg.textContent = `结果数：${hits.length}`;
     msg.className = "muted";
-    out.innerHTML = hits.length ? `<div class="results">${hits.map(resultCard).join("")}</div>` : `<div class="panel"><p class="eyebrow">暂无结果</p><p>当前没有命中结果。可以试试 登录、导出、ChatGPT、预算、代码。</p></div>`;
+    out.innerHTML = hits.length ? `${segmentBlock(hits)}<div class="results">${hits.map(resultCard).join("")}</div>` : `<div class="panel"><p class="eyebrow">暂无结果</p><p>当前没有命中结果。可以试试 登录、导出、ChatGPT、预算、代码。</p></div>`;
   }
   if (event.target.id === "file-form") {
     const path = document.getElementById("file-path").value.trim();
@@ -222,7 +249,12 @@ main.addEventListener("submit", (event) => {
     const name = document.getElementById("key-name").value.trim();
     const terms = document.getElementById("key-terms").value.split(/[，,]/).map((item) => item.trim()).filter(Boolean);
     if (!name || !terms.length) return;
-    db.keywords.unshift({ id: db.nextId++, name, category: document.getElementById("key-cat").value.trim() || "未分类", terms });
+    const category = document.getElementById("key-cat").value.trim() || "未分类";
+    if (editingKey) {
+      const current = db.keywords.find((item) => item.id === editingKey);
+      if (current) { current.name = name; current.category = category; current.terms = terms; }
+      editingKey = null;
+    } else db.keywords.unshift({ id: db.nextId++, name, category, terms });
     save();
     render();
   }
