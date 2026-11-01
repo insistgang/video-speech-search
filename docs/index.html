@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>视频画面内容智能检索平台</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
+    header, main { padding: 28px 8vw; }
+    h1 { margin: 0 0 8px; }
+    .note { color: #93c5fd; }
+    form { display: flex; gap: 8px; margin: 18px 0; }
+    input { flex: 1; padding: 12px 14px; border-radius: 10px; border: 1px solid #334155; background: #1e293b; color: inherit; }
+    button { border: 0; border-radius: 10px; background: #38bdf8; color: #082f49; font-weight: 700; padding: 12px 18px; }
+    article { display: grid; grid-template-columns: 120px 1fr; gap: 14px; background: #1e293b; border-radius: 14px; padding: 14px; margin: 10px 0; }
+    .frame { height: 78px; border-radius: 10px; background: linear-gradient(135deg, #0369a1, #0f172a); display: grid; place-items: center; color: #bae6fd; font-size: .8rem; }
+    mark { background: #fde68a; color: #111827; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>视频画面内容智能检索平台</h1>
+    <p class="note">浏览器演示。下面是抽帧后的文字索引，不上传视频，也不调用本机 OCR。</p>
+  </header>
+  <main>
+    <form id="form">
+      <input id="q" placeholder="搜索画面文字，例如：语文、黑板、比赛" />
+      <button>检索</button>
+    </form>
+    <p id="count"></p>
+    <div id="results"></div>
+  </main>
+  <script>
+    const frames = [
+      { video: "课堂录像.mp4", at: "00:05", text: "黑板标题：语文练习" },
+      { video: "课堂录像.mp4", at: "00:22", text: "投影片上的词：火中取粟" },
+      { video: "比赛集锦.mp4", at: "01:10", text: "计分牌显示比赛还在进行" },
+      { video: "比赛集锦.mp4", at: "02:03", text: "屏幕字幕：率先到达终点" },
+      { video: "采访.mp4", at: "00:48", text: "桌面上的稿纸写着引进球员" }
+    ];
+    const box = document.querySelector("#results");
+    const count = document.querySelector("#count");
+    function render(query) {
+      const q = query.trim();
+      const found = frames.filter(item => !q || item.text.includes(q) || item.video.includes(q));
+      count.textContent = q ? `找到 ${found.length} 帧` : `示例索引 ${frames.length} 帧`;
+      box.innerHTML = found.map(item => {
+        const text = q ? item.text.replaceAll(q, `<mark>${q}</mark>`) : item.text;
+        return `<article><div class="frame">${item.at}</div><div><strong>${item.video}</strong><p>${text}</p></div></article>`;
+      }).join("") || "<p>没有匹配画面。</p>";
+    }
+    document.querySelector("#form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      render(document.querySelector("#q").value);
+    });
+    render("");
+  </script>
+</body>
+</html>
